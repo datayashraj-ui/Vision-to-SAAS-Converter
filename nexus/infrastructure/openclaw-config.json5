@@ -1,0 +1,116 @@
+// OpenClaw CEO Agent Configuration
+// NEXUS — Autonomous AI Company
+// Founder: Yash (Telegram)
+{
+  "agents": {
+    "ceo": {
+      "persona": "agents/ceo.md",
+      "model": {
+        // Use free models for ops — save Claude Max quota for CTO coding tasks
+        "primary": "google/gemini-2.0-pro",
+        "fallback": ["groq/llama-4-scout", "ollama/glm5:cloud"],
+        "tools": "google/gemini-2.0-flash"  // fast model for tool calls
+      },
+      "memory": {
+        "provider": "cognee",
+        "url": "http://cognee:8000",
+        "namespace": "nexus-ceo"
+      },
+      "tools": [
+        "beads",          // task management
+        "stripe-mcp",     // revenue data
+        "glitchtip-mcp",  // error monitoring
+        "langfuse-mcp",   // LLM cost tracking
+        "docker-mcp",     // agent health
+        "github-mcp",     // code repository
+        "agent-mail",     // inter-agent comms
+        "perplexica"      // web research
+      ]
+    }
+  },
+
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "dmPolicy": "allowlist",
+      "allowFrom": ["${TELEGRAM_FOUNDER_ID}"],
+      "parseMode": "Markdown",
+      "typing_indicator": true  // show "typing..." while CEO thinks
+    },
+    "whatsapp": {
+      "enabled": true,
+      "dmPolicy": "allowlist",
+      "allowFrom": ["${FOUNDER_WHATSAPP}"],
+      "groupPolicy": "allowlist",
+      "allowedGroups": []
+    }
+  },
+
+  "session": {
+    "dmScope": "main",
+    "persistConversation": true,
+    "contextWindow": 50  // keep last 50 messages in context
+  },
+
+  // ─── Proactive Scheduled Messages ───────────────────────
+  "cron": [
+    {
+      "name": "morning-briefing",
+      "schedule": "0 7 * * *",
+      "channel": "telegram",
+      "prompt": "Generate a morning briefing for Yash. Check: (1) PROGRESS_LOG.md for overnight activity, (2) Beads API for today's priority tasks, (3) Stripe for overnight revenue and new signups, (4) GlitchTip for unresolved errors, (5) Agent Mail for overnight reports from agents. Write a conversational summary under 200 words. Start with the most important thing. End with today's #1 priority and any decisions needed from him. No bullet points — just 3-4 natural sentences."
+    },
+    {
+      "name": "midday-update",
+      "schedule": "0 12 * * *",
+      "channel": "telegram",
+      "prompt": "Send Yash a midday update. Check Beads for task progress, any blockers. Check if any agent has reported issues via Agent Mail. Keep it under 80 words. Only mention something if it's worth mentioning — don't pad with filler. If everything is smooth, say so in one sentence and tell him what's being worked on right now."
+    },
+    {
+      "name": "evening-summary",
+      "schedule": "0 18 * * *",
+      "channel": "telegram",
+      "prompt": "Send Yash an evening summary. Check: (1) Beads for tasks completed today, (2) Stripe for daily revenue, (3) PROGRESS_LOG.md for what was built/shipped. Write 3-5 sentences: what shipped, revenue update, top 3 priorities for tomorrow. Sign off warm but brief."
+    },
+    {
+      "name": "market-scout-daily",
+      "schedule": "0 3 * * *",
+      "channel": "telegram",
+      "prompt": "Run daily market research via Perplexica. Search for: (1) new ProductHunt launches in voice AI space, (2) Hacker News posts about voice AI, VAPI, ElevenLabs, (3) Reddit r/SaaS posts about AI calling or voice agents, (4) any competitor pricing changes. Score opportunities 1-10. Only send a Telegram message to Yash if an opportunity scores 8 or higher. Otherwise just log findings to docs/MARKET_INTEL.md.",
+      "skipNotifyIfLow": true  // don't wake Yash for low-score findings
+    },
+    {
+      "name": "agent-health-check",
+      "schedule": "*/15 * * * *",
+      "channel": "internal",
+      "prompt": "Check health of all Docker containers via Docker MCP. If any service is down, create a P0 Beads task and notify Watchdog agent. If Watchdog is also down, send direct Telegram alert to Yash."
+    },
+    {
+      "name": "jules-maintenance",
+      "schedule": "0 2 * * *",
+      "channel": "internal",
+      "prompt": "Trigger Jules scheduled tasks on the VoiceForge repository: (1) check for dependency updates (npm audit, pip-audit), (2) run test suite and report coverage, (3) check for security patches in Docker base images. Log results in PROGRESS_LOG.md. Only escalate to CTO if critical security issue found."
+    },
+    {
+      "name": "weekly-company-review",
+      "schedule": "0 10 * * SUN",
+      "channel": "telegram",
+      "prompt": "Generate a weekly company review for Yash. Include: MRR (from Stripe), tasks completed this week (from Beads), key decisions made (from DECISIONS.md), any customer feedback highlights (from FEEDBACK.md), top market intel (from MARKET_INTEL.md), and recommended focus for next week. Format as a brief executive summary, 300 words max."
+    }
+  ],
+
+  // ─── Skills (Telegram Commands) ─────────────────────────
+  "skills": [
+    { "trigger": ["status", "what's happening", "update me"], "file": "telegram-commands/status.md" },
+    { "trigger": ["build", "create", "make"], "file": "telegram-commands/build.md" },
+    { "trigger": ["ship", "deploy", "launch", "go live"], "file": "telegram-commands/ship.md" },
+    { "trigger": ["money", "revenue", "how much", "earnings"], "file": "telegram-commands/money.md" },
+    { "trigger": ["tasks", "show tasks", "task queue"], "file": "telegram-commands/tasks.md" },
+    { "trigger": ["approve", "i approve", "yes go ahead"], "file": "telegram-commands/approve.md" },
+    { "trigger": ["scout", "research", "investigate"], "file": "telegram-commands/scout.md" },
+    { "trigger": ["call", "ring", "phone"], "file": "telegram-commands/call.md" },
+    { "trigger": ["briefing", "summary", "audio summary"], "file": "telegram-commands/briefing.md" },
+    { "trigger": ["stop", "emergency", "kill", "halt"], "file": "telegram-commands/emergency.md" }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "project": "VoiceForge",
+  "version": "1.0",
+  "spec_directory": "products/voice-ai-saas/specs",
+  "template": {
+    "sections": [
+      "What It Does",
+      "Why We're Building It",
+      "Acceptance Criteria",
+      "Technical Notes",
+      "Out of Scope"
+    ],
+    "required_fields": ["priority", "requested_by", "date"],
+    "priority_levels": ["P0", "P1", "P2", "P3"]
+  },
+  "integrations": {
+    "beads": {
+      "enabled": true,
+      "auto_create_tasks": true,
+      "default_assignee": "cto"
+    },
+    "github": {
+      "enabled": true,
+      "create_issue": false,
+      "label": "spec"
+    }
+  }
+}

@@ -1,0 +1,604 @@
+version: "3.9"
+
+# VoiceForge + NEXUS — Full Stack Docker Compose
+# Target: Oracle Cloud ARM64 (4 OCPUs, 24GB RAM, 200GB storage)
+# Run: docker compose up -d
+#
+# RAM Budget:
+#   voiceforge-web:      512MB
+#   agent-engine:        1GB
+#   kokoro-tts:          2GB
+#   chatterbox-tts:      3GB
+#   whisper-stt:         1GB
+#   asterisk:            512MB
+#   telephony-bridge:    256MB
+#   postgres:            2GB
+#   redis:               512MB
+#   coolify:             1GB
+#   openclaw-ceo:        512MB
+#   zeroclaw-agents:     1.5GB (6 agents × 256MB)
+#   monitoring stack:    2GB
+#   other services:      3GB
+#   TOTAL:               ~20GB (4GB headroom)
+
+networks:
+  nexus:
+    driver: bridge
+  voiceforge:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  asterisk_config:
+  asterisk_recordings:
+  audio_storage:
+  coolify_data:
+  glitchtip_data:
+  langfuse_data:
+  posthog_data:
+  cognee_data:
+  perplexica_data:
+  chatwoot_data:
+  twenty_data:
+
+# ============================================================
+# VOICEFORGE — The Product
+# ============================================================
+
+services:
+
+  # ── Main Web Application ──────────────────────────────────
+  voiceforge-web:
+    image: ghcr.io/nexus-ai/voiceforge:latest
+    build:
+      context: ../products/voice-ai-saas
+      dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - DIRECT_URL=${DIRECT_URL}
+      - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+      - KOKORO_TTS_URL=http://kokoro-tts:8880
+      - WHISPER_STT_URL=http://whisper-stt:8881
+      - AGENT_ENGINE_URL=http://agent-engine:8882
+      - TELEPHONY_BRIDGE_URL=http://telephony-bridge:8883
+      - STORAGE_URL=${STORAGE_URL}
+      - STORAGE_KEY=${STORAGE_KEY}
+      - STORAGE_SECRET=${STORAGE_SECRET}
+      - STORAGE_BUCKET=voiceforge-audio
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_HOST=http://langfuse:3000
+      - NEXT_PUBLIC_POSTHOG_KEY=${POSTHOG_KEY}
+      - NEXT_PUBLIC_POSTHOG_HOST=http://posthog:8000
+      - GLITCHTIP_DSN=${GLITCHTIP_DSN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kokoro-tts:
+        condition: service_healthy
+    networks:
+      - voiceforge
+      - nexus
+    labels:
+      - "coolify.managed=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.voiceforge.rule=Host(`app.voiceforge.ai`)"
+      - "traefik.http.routers.voiceforge.tls.certresolver=letsencrypt"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── AI Voice Agent Orchestration Engine ──────────────────
+  agent-engine:
+    image: ghcr.io/nexus-ai/voiceforge-engine:latest
+    build:
+      context: ../products/voice-ai-saas/services/agent-engine
+      platforms:
+        - linux/arm64
+    restart: unless-stopped
+    ports:
+      - "8882:8882"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379
+      - KOKORO_TTS_URL=http://kokoro-tts:8880
+      - WHISPER_STT_URL=http://whisper-stt:8881
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_HOST=http://langfuse:3000
+    depends_on:
+      - redis
+      - kokoro-tts
+      - whisper-stt
+    networks:
+      - voiceforge
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8882/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Kokoro TTS Service ────────────────────────────────────
+  kokoro-tts:
+    image: ghcr.io/nexus-ai/kokoro-tts:latest
+    build:
+      context: ../products/voice-ai-saas/services/kokoro-tts
+      platforms:
+        - linux/arm64
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+    environment:
+      - MODEL_PATH=/models/kokoro-v0_19.pth
+      - VOICES_PATH=/voices
+      - DEVICE=cpu
+      - MAX_WORKERS=4
+    volumes:
+      - audio_storage:/audio
+    networks:
+      - voiceforge
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s  # model load time
+
+  # ── Chatterbox Voice Cloning Service ─────────────────────
+  chatterbox-tts:
+    image: ghcr.io/nexus-ai/chatterbox-tts:latest
+    build:
+      context: ../products/voice-ai-saas/services/chatterbox-tts
+      platforms:
+        - linux/arm64
+    restart: unless-stopped
+    ports:
+      - "8879:8879"
+    environment:
+      - DEVICE=cpu
+      - MAX_CLONE_DURATION=60
+    volumes:
+      - audio_storage:/audio
+    networks:
+      - voiceforge
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8879/health"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s  # large model load time
+
+  # ── Whisper STT Service ───────────────────────────────────
+  whisper-stt:
+    image: ghcr.io/nexus-ai/whisper-stt:latest
+    build:
+      context: ../products/voice-ai-saas/services/whisper-stt
+      platforms:
+        - linux/arm64
+    restart: unless-stopped
+    ports:
+      - "8881:8881"
+    environment:
+      - MODEL_SIZE=base.en
+      - DEVICE=cpu
+      - COMPUTE_TYPE=int8  # faster on CPU
+      - VAD_ENABLED=true
+      - MAX_WORKERS=2
+    networks:
+      - voiceforge
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8881/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  # ── Asterisk SIP/PSTN Telephony ───────────────────────────
+  asterisk:
+    image: andrius/asterisk:20-alpine
+    # Note: if ARM64 image unavailable, build from source:
+    # build:
+    #   context: ../products/voice-ai-saas/services/asterisk
+    #   platforms: [linux/arm64]
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"    # SIP
+      - "5060:5060/tcp"    # SIP TCP
+      - "5061:5061/tcp"    # SIP TLS
+      - "8088:8088"        # ARI (HTTP + WebSocket)
+      - "10000-10100:10000-10100/udp"  # RTP media
+    volumes:
+      - asterisk_config:/etc/asterisk
+      - asterisk_recordings:/var/spool/asterisk/monitor
+    environment:
+      - ASTERISK_ARI_USER=${ASTERISK_ARI_USER:-voiceforge}
+      - ASTERISK_ARI_PASSWORD=${ASTERISK_ARI_PASSWORD}
+    networks:
+      - voiceforge
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Telephony Bridge (Asterisk ↔ Agent Engine) ────────────
+  telephony-bridge:
+    image: ghcr.io/nexus-ai/telephony-bridge:latest
+    build:
+      context: ../products/voice-ai-saas/services/telephony-bridge
+      platforms:
+        - linux/arm64
+    restart: unless-stopped
+    ports:
+      - "8883:8883"
+    environment:
+      - ASTERISK_ARI_URL=http://asterisk:8088
+      - ASTERISK_ARI_USER=${ASTERISK_ARI_USER:-voiceforge}
+      - ASTERISK_ARI_PASSWORD=${ASTERISK_ARI_PASSWORD}
+      - AGENT_ENGINE_URL=ws://agent-engine:8882
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - asterisk
+      - agent-engine
+    networks:
+      - voiceforge
+    mem_limit: 256m
+
+  # ============================================================
+  # DATA LAYER
+  # ============================================================
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-nexus}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=voiceforge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - nexus
+      - voiceforge
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexus}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      - nexus
+      - voiceforge
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # MONITORING STACK
+  # ============================================================
+
+  # Error monitoring (Sentry alternative)
+  glitchtip:
+    image: glitchtip/glitchtip:latest
+    restart: unless-stopped
+    ports:
+      - "8010:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/glitchtip
+      - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
+      - EMAIL_URL=${EMAIL_URL:-consolemail://}
+      - GLITCHTIP_DOMAIN=${GLITCHTIP_DOMAIN}
+      - DEFAULT_AUTO_FIELD=django.db.models.BigAutoField
+      - CELERY_WORKER_CONCURRENCY=1
+    volumes:
+      - glitchtip_data:/code/uploads
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - nexus
+    mem_limit: 512m
+
+  # LLM observability
+  langfuse:
+    image: langfuse/langfuse:latest
+    restart: unless-stopped
+    ports:
+      - "3010:3000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/langfuse
+      - NEXTAUTH_URL=${LANGFUSE_DOMAIN}
+      - NEXTAUTH_SECRET=${LANGFUSE_SECRET}
+      - SALT=${LANGFUSE_SALT}
+      - TELEMETRY_ENABLED=false
+    depends_on:
+      - postgres
+    networks:
+      - nexus
+    mem_limit: 512m
+
+  # Product analytics
+  posthog:
+    image: posthog/posthog:latest
+    restart: unless-stopped
+    ports:
+      - "8020:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/posthog
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - SECRET_KEY=${POSTHOG_SECRET}
+      - SITE_URL=${POSTHOG_DOMAIN}
+      - DISABLE_SECURE_SSL_REDIRECT=true
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - nexus
+    mem_limit: 1g
+
+  # AI memory / knowledge graph
+  cognee:
+    image: cogneeai/cognee:latest
+    restart: unless-stopped
+    ports:
+      - "8030:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/cognee
+      - LLM_PROVIDER=google
+      - GOOGLE_API_KEY=${GOOGLE_AI_API_KEY}
+    volumes:
+      - cognee_data:/data
+    depends_on:
+      - postgres
+    networks:
+      - nexus
+    mem_limit: 512m
+
+  # ============================================================
+  # CUSTOMER-FACING SERVICES
+  # ============================================================
+
+  # Customer support chat
+  chatwoot:
+    image: chatwoot/chatwoot:latest
+    restart: unless-stopped
+    ports:
+      - "3020:3000"
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/chatwoot
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - SECRET_KEY_BASE=${CHATWOOT_SECRET}
+      - FRONTEND_URL=${CHATWOOT_DOMAIN}
+    volumes:
+      - chatwoot_data:/app/storage
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - nexus
+    mem_limit: 512m
+
+  # CRM
+  twenty:
+    image: twentycrm/twenty:latest
+    restart: unless-stopped
+    ports:
+      - "3030:3000"
+    environment:
+      - PG_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/twenty
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
+      - APP_SECRET=${TWENTY_SECRET}
+      - FRONT_BASE_URL=${TWENTY_DOMAIN}
+    volumes:
+      - twenty_data:/app/packages/twenty-server/files
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - nexus
+    mem_limit: 512m
+
+  # AI search
+  perplexica:
+    image: itzcrazykns1337/perplexica:main
+    restart: unless-stopped
+    ports:
+      - "3040:3000"
+    environment:
+      - SEARXNG_API_URL=http://searxng:8080
+      - OPENAI_API_KEY=${GOOGLE_AI_API_KEY}  # uses OpenAI-compatible endpoint
+    depends_on:
+      - searxng
+    volumes:
+      - perplexica_data:/home/perplexica/data
+    networks:
+      - nexus
+    mem_limit: 256m
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    networks:
+      - nexus
+    mem_limit: 256m
+
+  # ============================================================
+  # NEXUS AGENT INFRASTRUCTURE
+  # ============================================================
+
+  # CEO Agent (OpenClaw — always-on Telegram gateway)
+  openclaw-ceo:
+    image: openclaw/openclaw:latest
+    restart: unless-stopped
+    environment:
+      - OPENCLAW_CONFIG=/config/openclaw-config.json5
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ALLOWED_USER=${TELEGRAM_FOUNDER_ID}
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - COGNEE_URL=http://cognee:8000
+      - BEADS_URL=${BEADS_URL}
+    volumes:
+      - ./openclaw-config.json5:/config/openclaw-config.json5:ro
+      - ../agents:/agents:ro
+      - ../telegram-commands:/skills:ro
+      - ../docs:/docs
+    networks:
+      - nexus
+    mem_limit: 512m
+
+  # ZeroClaw Agent Daemons (lightweight, free-model agents)
+  zeroclaw-sales:
+    image: zeroclaw/zeroclaw:latest
+    restart: unless-stopped
+    environment:
+      - AGENT_CONFIG=/agents/sales.md
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - TWENTY_URL=http://twenty:3000
+      - AGENT_MAIL_URL=http://openclaw-ceo:3100/mail
+    volumes:
+      - ../agents/sales.md:/agents/sales.md:ro
+    networks:
+      - nexus
+    mem_limit: 256m
+
+  zeroclaw-support:
+    image: zeroclaw/zeroclaw:latest
+    restart: unless-stopped
+    environment:
+      - AGENT_CONFIG=/agents/support.md
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - CHATWOOT_URL=http://chatwoot:3000
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - AGENT_MAIL_URL=http://openclaw-ceo:3100/mail
+    volumes:
+      - ../agents/support.md:/agents/support.md:ro
+    networks:
+      - nexus
+    mem_limit: 256m
+
+  zeroclaw-marketing:
+    image: zeroclaw/zeroclaw:latest
+    restart: unless-stopped
+    environment:
+      - AGENT_CONFIG=/agents/marketing.md
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - POSTIZ_URL=${POSTIZ_URL}
+      - POSTIZ_API_KEY=${POSTIZ_API_KEY}
+      - AGENT_MAIL_URL=http://openclaw-ceo:3100/mail
+    volumes:
+      - ../agents/marketing.md:/agents/marketing.md:ro
+    networks:
+      - nexus
+    mem_limit: 256m
+
+  zeroclaw-watchdog:
+    image: zeroclaw/zeroclaw:latest
+    restart: unless-stopped
+    environment:
+      - AGENT_CONFIG=/agents/watchdog.md
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - GLITCHTIP_URL=http://glitchtip:8000
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_FOUNDER_ID=${TELEGRAM_FOUNDER_ID}
+      - AGENT_MAIL_URL=http://openclaw-ceo:3100/mail
+    volumes:
+      - ../agents/watchdog.md:/agents/watchdog.md:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - nexus
+    mem_limit: 256m
+
+  zeroclaw-market-scout:
+    image: zeroclaw/zeroclaw:latest
+    restart: unless-stopped
+    environment:
+      - AGENT_CONFIG=/agents/market-scout.md
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - PERPLEXICA_URL=http://perplexica:3000
+      - AGENT_MAIL_URL=http://openclaw-ceo:3100/mail
+    volumes:
+      - ../agents/market-scout.md:/agents/market-scout.md:ro
+    networks:
+      - nexus
+    mem_limit: 256m
+
+  zeroclaw-finance:
+    image: zeroclaw/zeroclaw:latest
+    restart: unless-stopped
+    environment:
+      - AGENT_CONFIG=/agents/finance.md
+      - GOOGLE_AI_API_KEY=${GOOGLE_AI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - LANGFUSE_URL=http://langfuse:3000
+      - AGENT_MAIL_URL=http://openclaw-ceo:3100/mail
+    volumes:
+      - ../agents/finance.md:/agents/finance.md:ro
+    networks:
+      - nexus
+    mem_limit: 256m
+
+  # ============================================================
+  # DEPLOYMENT PLATFORM
+  # ============================================================
+
+  coolify:
+    image: coollabsio/coolify:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+      - "6001:6001"
+      - "6002:6002"
+    volumes:
+      - coolify_data:/data/coolify
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.ssh:/root/.ssh:ro
+    networks:
+      - nexus
+    mem_limit: 1g
+    privileged: true
